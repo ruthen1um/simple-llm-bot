@@ -2,11 +2,10 @@
 """
 Simple and easy to deploy telegram bot for communication with LLM.
 """
-
-from dataclasses import dataclass
-from enum import Enum
 import logging
 import os
+from enum import Enum
+from dataclasses import dataclass
 
 import httpx
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -22,38 +21,31 @@ from telegram.ext import (
 )
 from dotenv import dotenv_values
 
-
-class InputMode(Enum):
-    TEXT = 1
-    DOCUMENTS = 2
-    IMAGES = 3
+from quickllmbot import llm
+from quickllmbot import strings
 
 
-class OutputVerbosity(Enum):
-    SHORT = 1
-    DEFAULT = 2
-    VERBOSE = 3
+class ConversationState(Enum):
+    """Represents the conversation state."""
 
-
-@dataclass
-class LLMChatSettings:
-    input_mode: InputMode | None
-    output_verbosity: OutputVerbosity | None
-
-
-@dataclass
-class LLMChat:
-    settings: LLMChatSettings
-    data: dict
-
-
-class BotState(Enum):
-    INPUT_MODE_SELECTION = 1
-    OUTPUT_VERBOSITY_SELECTION = 2
-    CHATTING_WITH_LLM = 3
+    LLM_MODE_SELECTION = 1
+    LLM_VERBOSITY_SELECTION = 2
+    LLM_CHATTING = 3
 
 
 CHAT_COMPLETIONS_API_PATH = "/chat/completions"
+
+LLM_CHAT_USER_DATA_FIELD = "llm_chat"
+
+@dataclass(frozen=True)
+class CallbackData:
+    LLM_MODE_TEXT = "text"
+    LLM_MODE_DOCUMENTS = "documents"
+    LLM_MODE_IMAGES = "images"
+
+    LLM_VERBOSITY_SHORT = "short"
+    LLM_VERBOSITY_DEFAULT = "default"
+    LLM_VERBOSITY_VERBOSE = "verbose"
 
 ENV_FILE_PATH = ".env"
 CONFIG: dict
@@ -65,15 +57,14 @@ LLM_API_URL: str
 llm_client: httpx.AsyncClient
 logger: logging.Logger
 
-
 def check_env_file(path: str) -> None:
-    """Check env file existence."""
+    """Checks env file existence."""
     if not os.path.isfile(path):
         raise RuntimeError(f"{path} does not exist or is not a file")
 
 
 def check_config(config: dict) -> None:
-    """Check required variables in config."""
+    """Checks required variables existence in config."""
     if "TELEGRAM_BOT_TOKEN" not in config:
         raise RuntimeError(f"TELEGRAM_BOT_TOKEN is not provided in {ENV_FILE_PATH}")
 
@@ -86,95 +77,134 @@ def check_config(config: dict) -> None:
         raise RuntimeError(f"LLM_API_URL is not provided in {ENV_FILE_PATH}")
 
 
-def get_input_mode(s: str) -> InputMode:
+def get_llm_mode(s: str) -> llm.LLMMode:
+    """Returns LLMMode object based on input string"""
     match s:
-        case "text":
-            return InputMode.TEXT
-        case "documents":
-            return InputMode.DOCUMENTS
-        case "images":
-            return InputMode.IMAGES
+        case CallbackData.LLM_MODE_TEXT:
+            return llm.LLMMode.TEXT
+        case CallbackData.LLM_MODE_DOCUMENTS:
+            return llm.LLMMode.DOCUMENTS
+        case CallbackData.LLM_MODE_IMAGES:
+            return llm.LLMMode.IMAGES
         case _:
-            raise RuntimeError("`s` is unknown")
+            raise ValueError("`s` does not correspond to a valid LLMMode object")
 
 
-def get_output_verbosity(s: str) -> OutputVerbosity:
+def get_llm_verbosity(s: str) -> llm.LLMVerbosity:
+    """Returns LLMVerbosity object based on input string"""
     match s:
-        case "short":
-            return OutputVerbosity.SHORT
-        case "default":
-            return OutputVerbosity.DEFAULT
-        case "verbose":
-            return OutputVerbosity.VERBOSE
+        case CallbackData.LLM_VERBOSITY_SHORT:
+            return llm.LLMVerbosity.SHORT
+        case CallbackData.LLM_VERBOSITY_DEFAULT:
+            return llm.LLMVerbosity.DEFAULT
+        case CallbackData.LLM_VERBOSITY_VERBOSE:
+            return llm.LLMVerbosity.VERBOSE
         case _:
-            raise RuntimeError("`s` is unknown")
+            raise ValueError("`s` does not correspond to a valid LLMVerbosity object")
 
 
-async def input_mode_selection_entry(
+async def llm_mode_selection_entry(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
+    """Sends message upon entering LLM_MODE_SELECTION conversation state."""
     keyboard = [
-        [InlineKeyboardButton("Работа с текстом", callback_data="text")],
-        [InlineKeyboardButton("Работа с документами", callback_data="documents")],
-        [InlineKeyboardButton("Работа с изображениями", callback_data="images")],
+        [
+            InlineKeyboardButton(
+                strings.LLMModeSelection.TEXT_MODE_BUTTON,
+                callback_data=CallbackData.LLM_MODE_TEXT,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                strings.LLMModeSelection.DOCUMENTS_MODE_BUTTON,
+                callback_data=CallbackData.LLM_MODE_DOCUMENTS,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                strings.LLMModeSelection.IMAGES_MODE_BUTTON,
+                callback_data=CallbackData.LLM_MODE_IMAGES,
+            )
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите режим работы:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        strings.LLMModeSelection.REQUEST, reply_markup=reply_markup
+    )
 
 
-async def output_verbosity_selection_entry(
+async def llm_verbosity_selection_entry(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
+    """Sends message upon entering LLM_VERBOSITY_SELECTION conversation state."""
     user = update.effective_user
     keyboard = [
-        [InlineKeyboardButton("Краткий", callback_data="short")],
-        [InlineKeyboardButton("Стандартный", callback_data="default")],
-        [InlineKeyboardButton("Подробный", callback_data="verbose")],
+        [
+            InlineKeyboardButton(
+                strings.LLMVerbositySelection.SHORT_VERBOSITY_BUTTON,
+                callback_data=CallbackData.LLM_VERBOSITY_SHORT,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                strings.LLMVerbositySelection.DEFAULT_VERBOSITY_BUTTON,
+                callback_data=CallbackData.LLM_VERBOSITY_DEFAULT,
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                strings.LLMVerbositySelection.VERBOSE_VERBOSITY_BUTTON,
+                callback_data=CallbackData.LLM_VERBOSITY_VERBOSE,
+            )
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await user.send_message(
-        "Выберите степень подробности ответа:", reply_markup=reply_markup
+        strings.LLMVerbositySelection.REQUEST, reply_markup=reply_markup
     )
 
 
-async def chatting_with_llm_entry(
+async def llm_chatting_entry(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     user = update.effective_user
-    await user.send_message(
-        "Чат с LLM создан. Далее пишите ваши промпты. "
-        "Для завершения чата используйте команду /stop."
-    )
+    await user.send_message(strings.Global.CHAT_CREATION_SUCCESS)
 
 
-async def input_mode_selection_handler(
+async def llm_mode_selection_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> BotState:
+) -> ConversationState:
     query = update.callback_query
+    data = query.data
 
-    context.user_data["llm_chat"].settings.input_mode = get_input_mode(query.data)
+    context.user_data[LLM_CHAT_USER_DATA_FIELD].settings.mode = get_llm_mode(data)
 
     await query.answer()
-    await query.edit_message_text(f"Выбранный режим работы: {query.data}.")
+    await query.edit_message_text(
+        strings.LLMModeSelection.SELECTION_FORMAT.format(mode=data)
+    )
 
-    await output_verbosity_selection_entry(update, context)
-    return BotState.OUTPUT_VERBOSITY_SELECTION
+    await llm_verbosity_selection_entry(update, context)
+    return ConversationState.LLM_VERBOSITY_SELECTION
 
 
-async def output_verbosity_selection_handler(
+async def llm_verbosity_selection_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> BotState:
+) -> ConversationState:
     query = update.callback_query
+    data = query.data
 
-    context.user_data["llm_chat"].settings.output_verbosity = get_output_verbosity(
-        query.data
+    context.user_data[LLM_CHAT_USER_DATA_FIELD].settings.verbosity = get_llm_verbosity(
+        data
     )
 
     await query.answer()
-    await query.edit_message_text(f"Выбранный режим работы: {query.data}.")
+    await query.edit_message_text(
+        strings.LLMVerbositySelection.SELECTION_FORMAT.format(verbosity=data)
+    )
 
-    await chatting_with_llm_entry(update, context)
-    return BotState.CHATTING_WITH_LLM
+    await llm_chatting_entry(update, context)
+    return ConversationState.LLM_CHATTING
 
 
 async def get_next_llm_chat_completion(data: dict) -> str:
@@ -186,6 +216,7 @@ async def get_next_llm_chat_completion(data: dict) -> str:
     response_data = response.json()
 
     completions = []
+    # TODO: make more efficient by just counting
     for choice in response_data["choices"]:
         completions.append(choice)
 
@@ -198,21 +229,22 @@ async def get_next_llm_chat_completion(data: dict) -> str:
     return completions[0]["message"]["content"]
 
 
-def get_system_prompt(settings: LLMChatSettings) -> str:
-    # TODO: create system prompt selection logic
+def get_system_prompt(settings: llm.LLMSettings) -> str:
+    """Returns system prompt corresponding to provided settings."""
+    # TODO: implement system prompt selection logic
+    # TODO: figure out what to do if LLM output does not fit in 4096 character limit
 
-    # Telegram message can have 4096 characters at max so specify this in
-    # system prompt
+    # Telegram message can have 4096 characters at max so specify this in system prompt
     return (
         "You are a helpful assistant.\n"
         "Your output must always be less or equal to 4096 characters.\n"
     )
 
 
-async def chatting_with_llm_handler(
+async def llm_chatting_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    llm_chat = context.user_data["llm_chat"]
+    llm_chat = context.user_data[LLM_CHAT_USER_DATA_FIELD]
 
     if not llm_chat.data:
         llm_chat.data = {
@@ -228,45 +260,54 @@ async def chatting_with_llm_handler(
     llm_messages = llm_chat.data["messages"]
     llm_messages.append({"role": "user", "content": prompt})
 
-    bot_message = await update.message.reply_text("Думаю...")
+    bot_message = await update.message.reply_text(strings.LLMChatting.THINKING)
     try:
         answer = await get_next_llm_chat_completion(llm_chat.data)
         llm_messages.append({"role": "assistant", "content": answer})
         await bot_message.edit_text(answer)
     except Exception as ex:
-        await bot_message.edit_text("Ошибка при взаимодействии с LLM.")
+        await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
         raise ex
 
 
-async def llm_configuration_unsupported_command_message(
-    command: str, update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    await update.message.reply_text(
-        f"Команда /{command} недоступна во время создания чата чата.\n"
-        "Чтобы завершить создание чата используйте команду /cancel."
-    )
-
-
-async def llm_configuration_cancel_handler(
+async def chat_creation_cancellation_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     """Send a message when the command /cancel is issued."""
-    await update.message.reply_text("Создание чата отменено.")
+    await update.message.reply_text(strings.Global.CHAT_CREATION_CANCELLATION)
     return ConversationHandler.END
 
 
-async def llm_configuration_start_handler(
+async def llm_mode_selection_start_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Send a message when the command /start is issued while configuring LLM."""
-    await llm_configuration_unsupported_command_message("start", update, context)
+    await update.message.reply_text(
+        strings.LLMModeSelection.UNAVAILABLE_COMMAND_FORMAT.format("start")
+    )
 
 
-async def llm_configuration_new_handler(
+async def llm_mode_selection_new_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Send a message when the command /new is issued while configuring LLM."""
-    await llm_configuration_unsupported_command_message("new", update, context)
+    await update.message.reply_text(
+        strings.LLMModeSelection.UNAVAILABLE_COMMAND_FORMAT.format("new")
+    )
+
+
+async def llm_verbosity_selection_start_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    await update.message.reply_text(
+        strings.LLMVerbositySelection.UNAVAILABLE_COMMAND_FORMAT.format("start")
+    )
+
+
+async def llm_verbosity_selection_new_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    await update.message.reply_text(
+        strings.LLMVerbositySelection.UNAVAILABLE_COMMAND_FORMAT.format("new")
+    )
 
 
 def generate_help(data: dict[str, str]) -> str:
@@ -276,7 +317,7 @@ def generate_help(data: dict[str, str]) -> str:
     return "\n".join(rows)
 
 
-async def llm_configuration_help_handler(
+async def chat_creation_help_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /help is issued while configuring LLM."""
@@ -287,7 +328,7 @@ async def llm_configuration_help_handler(
     )
 
 
-async def chatting_with_llm_unsupported_command_message(
+async def llm_chatting_unsupported_command_message(
     command: str, update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     await update.message.reply_text(
@@ -296,31 +337,31 @@ async def chatting_with_llm_unsupported_command_message(
     )
 
 
-async def chatting_with_llm_stop_handler(
+async def llm_chatting_stop_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     """Send a message when the command /stop is issued."""
     await update.message.reply_text("Чат завершён.")
-    context.user_data["llm_chat"].settings = None
-    context.user_data["llm_chat"].data = None
+    context.user_data[LLM_CHAT_USER_DATA_FIELD].settings = None
+    context.user_data[LLM_CHAT_USER_DATA_FIELD].data = None
     return ConversationHandler.END
 
 
-async def chatting_with_llm_start_handler(
+async def llm_chatting_start_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /start is issued while chatting with LLM."""
-    await chatting_with_llm_unsupported_command_message("start", update, context)
+    await llm_chatting_unsupported_command_message("start", update, context)
 
 
-async def chatting_with_llm_new_handler(
+async def llm_chatting_new_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /new is issued while configuring LLM."""
-    await chatting_with_llm_unsupported_command_message("new", update, context)
+    await llm_chatting_unsupported_command_message("new", update, context)
 
 
-async def chatting_with_llm_help_handler(
+async def llm_chatting_help_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /help is issued while chatting with LLM."""
@@ -331,11 +372,13 @@ async def chatting_with_llm_help_handler(
 
 async def entry_new_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> BotState:
+) -> ConversationState:
     """Send a message when the command /new is issued."""
-    context.user_data["llm_chat"] = LLMChat(LLMChatSettings(None, None), {})
-    await input_mode_selection_entry(update, context)
-    return BotState.INPUT_MODE_SELECTION
+    context.user_data[LLM_CHAT_USER_DATA_FIELD] = llm.LLMChat(
+        llm.LLMSettings(None, None), {}
+    )
+    await llm_mode_selection_entry(update, context)
+    return ConversationState.LLM_MODE_SELECTION
 
 
 async def global_start_handler(
@@ -384,28 +427,26 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("new", entry_new_handler)],
         states={
-            BotState.INPUT_MODE_SELECTION: [
-                CallbackQueryHandler(input_mode_selection_handler),
-                CommandHandler("cancel", llm_configuration_cancel_handler),
-                CommandHandler("start", llm_configuration_start_handler),
-                CommandHandler("new", llm_configuration_new_handler),
-                CommandHandler("help", llm_configuration_help_handler),
+            ConversationState.LLM_MODE_SELECTION: [
+                CallbackQueryHandler(llm_mode_selection_handler),
+                CommandHandler("cancel", chat_creation_cancellation_handler),
+                CommandHandler("start", llm_mode_selection_start_handler),
+                CommandHandler("new", llm_mode_selection_new_handler),
+                CommandHandler("help", chat_creation_help_handler),
             ],
-            BotState.OUTPUT_VERBOSITY_SELECTION: [
-                CallbackQueryHandler(output_verbosity_selection_handler),
-                CommandHandler("cancel", llm_configuration_cancel_handler),
-                CommandHandler("start", llm_configuration_start_handler),
-                CommandHandler("new", llm_configuration_new_handler),
-                CommandHandler("help", llm_configuration_help_handler),
+            ConversationState.LLM_VERBOSITY_SELECTION: [
+                CallbackQueryHandler(llm_verbosity_selection_handler),
+                CommandHandler("cancel", chat_creation_cancellation_handler),
+                CommandHandler("start", llm_verbosity_selection_start_handler),
+                CommandHandler("new", llm_verbosity_selection_new_handler),
+                CommandHandler("help", chat_creation_help_handler),
             ],
-            BotState.CHATTING_WITH_LLM: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, chatting_with_llm_handler
-                ),
-                CommandHandler("stop", chatting_with_llm_stop_handler),
-                CommandHandler("start", chatting_with_llm_start_handler),
-                CommandHandler("new", chatting_with_llm_new_handler),
-                CommandHandler("help", chatting_with_llm_help_handler),
+            ConversationState.LLM_CHATTING: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, llm_chatting_handler),
+                CommandHandler("stop", llm_chatting_stop_handler),
+                CommandHandler("start", llm_chatting_start_handler),
+                CommandHandler("new", llm_chatting_new_handler),
+                CommandHandler("help", llm_chatting_help_handler),
             ],
         },
         fallbacks=[],
