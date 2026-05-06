@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from typing import Any
 from enum import Enum
+
 
 class LLMMode(Enum):
     """Represents mode of LLM operation."""
@@ -30,4 +32,4 @@ class LLMChat:
     """Stores LLM chat data and settings."""
 
     settings: LLMSettings | None
-    data: dict | None
+    data: dict[str, Any] | None

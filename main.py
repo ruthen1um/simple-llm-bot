@@ -4,6 +4,7 @@ Simple and easy to deploy telegram bot for communication with LLM.
 """
 import logging
 import os
+from typing import Any
 from enum import Enum
 from dataclasses import dataclass
 
@@ -37,6 +38,7 @@ CHAT_COMPLETIONS_API_PATH = "/chat/completions"
 
 LLM_CHAT_USER_DATA_FIELD = "llm_chat"
 
+
 @dataclass(frozen=True)
 class CallbackData:
     LLM_MODE_TEXT = "text"
@@ -47,8 +49,9 @@ class CallbackData:
     LLM_VERBOSITY_DEFAULT = "default"
     LLM_VERBOSITY_VERBOSE = "verbose"
 
+
 ENV_FILE_PATH = ".env"
-CONFIG: dict
+CONFIG: dict[str, str]
 
 TELEGRAM_BOT_TOKEN: str
 TELEGRAM_BOT_PERSISTENCE_FILE: str
@@ -57,13 +60,14 @@ LLM_API_URL: str
 llm_client: httpx.AsyncClient
 logger: logging.Logger
 
+
 def check_env_file(path: str) -> None:
     """Checks env file existence."""
     if not os.path.isfile(path):
         raise RuntimeError(f"{path} does not exist or is not a file")
 
 
-def check_config(config: dict) -> None:
+def check_config(config: dict[str, str]) -> None:
     """Checks required variables existence in config."""
     if "TELEGRAM_BOT_TOKEN" not in config:
         raise RuntimeError(f"TELEGRAM_BOT_TOKEN is not provided in {ENV_FILE_PATH}")
@@ -87,7 +91,7 @@ def get_llm_mode(s: str) -> llm.LLMMode:
         case CallbackData.LLM_MODE_IMAGES:
             return llm.LLMMode.IMAGES
         case _:
-            raise ValueError("`s` does not correspond to a valid LLMMode object")
+            raise ValueError("s does not correspond to a valid LLMMode object")
 
 
 def get_llm_verbosity(s: str) -> llm.LLMVerbosity:
@@ -100,13 +104,17 @@ def get_llm_verbosity(s: str) -> llm.LLMVerbosity:
         case CallbackData.LLM_VERBOSITY_VERBOSE:
             return llm.LLMVerbosity.VERBOSE
         case _:
-            raise ValueError("`s` does not correspond to a valid LLMVerbosity object")
+            raise ValueError("s does not correspond to a valid LLMVerbosity object")
 
 
 async def llm_mode_selection_entry(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Sends message upon entering LLM_MODE_SELECTION conversation state."""
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
     keyboard = [
         [
             InlineKeyboardButton(
@@ -128,7 +136,7 @@ async def llm_mode_selection_entry(
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
+    await message.reply_text(
         strings.LLMModeSelection.REQUEST, reply_markup=reply_markup
     )
 
@@ -138,6 +146,9 @@ async def llm_verbosity_selection_entry(
 ) -> None:
     """Sends message upon entering LLM_VERBOSITY_SELECTION conversation state."""
     user = update.effective_user
+    if user is None:
+        raise TypeError("user is None")
+
     keyboard = [
         [
             InlineKeyboardButton(
@@ -168,14 +179,25 @@ async def llm_chatting_entry(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     user = update.effective_user
-    await user.send_message(strings.Global.CHAT_CREATION_SUCCESS)
+    if user is None:
+        raise TypeError("user is None")
+
+    await user.send_message(strings.ChatCreation.SUCCESS)
 
 
 async def llm_mode_selection_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> ConversationState:
+    if context.user_data is None:
+        context.user_data = {}
+
     query = update.callback_query
+    if query is None:
+        raise TypeError("query is None")
+
     data = query.data
+    if data is None:
+        raise TypeError("data is None")
 
     context.user_data[LLM_CHAT_USER_DATA_FIELD].settings.mode = get_llm_mode(data)
 
@@ -191,8 +213,16 @@ async def llm_mode_selection_handler(
 async def llm_verbosity_selection_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> ConversationState:
+    if context.user_data is None:
+        context.user_data = {}
+
     query = update.callback_query
+    if query is None:
+        raise TypeError("query is None")
+
     data = query.data
+    if data is None:
+        raise TypeError("data is None")
 
     context.user_data[LLM_CHAT_USER_DATA_FIELD].settings.verbosity = get_llm_verbosity(
         data
@@ -207,7 +237,7 @@ async def llm_verbosity_selection_handler(
     return ConversationState.LLM_CHATTING
 
 
-async def get_next_llm_chat_completion(data: dict) -> str:
+async def get_next_llm_chat_completion(data: dict[str, Any]) -> str:
     response = await llm_client.post(
         CHAT_COMPLETIONS_API_PATH,
         json=data,
@@ -215,18 +245,18 @@ async def get_next_llm_chat_completion(data: dict) -> str:
     response.raise_for_status()
     response_data = response.json()
 
-    completions = []
-    # TODO: make more efficient by just counting
-    for choice in response_data["choices"]:
-        completions.append(choice)
-
-    if len(completions) > 1:
+    choices = response_data["choices"]
+    if len(choices) > 1:
         raise RuntimeError("LLM returned more than one choice")
 
-    if completions[0]["finish_reason"] != "stop":
+    if choices[0]["finish_reason"] != "stop":
         raise RuntimeError("LLM finish reason is not `stop`")
 
-    return completions[0]["message"]["content"]
+    completion = choices[0]["message"]["content"]
+    if not isinstance(completion, str):
+        raise TypeError("completion type is not str")
+
+    return completion
 
 
 def get_system_prompt(settings: llm.LLMSettings) -> str:
@@ -244,6 +274,13 @@ def get_system_prompt(settings: llm.LLMSettings) -> str:
 async def llm_chatting_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
+    if context.user_data is None:
+        context.user_data = {}
+
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
     llm_chat = context.user_data[LLM_CHAT_USER_DATA_FIELD]
 
     if not llm_chat.data:
@@ -256,11 +293,11 @@ async def llm_chatting_handler(
             ]
         }
 
-    prompt = update.message.text
+    prompt = message.text
     llm_messages = llm_chat.data["messages"]
     llm_messages.append({"role": "user", "content": prompt})
 
-    bot_message = await update.message.reply_text(strings.LLMChatting.THINKING)
+    bot_message = await message.reply_text(strings.LLMChatting.THINKING)
     try:
         answer = await get_next_llm_chat_completion(llm_chat.data)
         llm_messages.append({"role": "assistant", "content": answer})
@@ -274,39 +311,59 @@ async def chat_creation_cancellation_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     """Send a message when the command /cancel is issued."""
-    await update.message.reply_text(strings.Global.CHAT_CREATION_CANCELLATION)
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(strings.ChatCreation.CANCELLATION)
     return ConversationHandler.END
 
 
 async def llm_mode_selection_start_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    await update.message.reply_text(
-        strings.LLMModeSelection.UNAVAILABLE_COMMAND_FORMAT.format("start")
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
+        strings.LLMModeSelection.UNAVAILABLE_COMMAND_FORMAT.format(command="start")
     )
 
 
 async def llm_mode_selection_new_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    await update.message.reply_text(
-        strings.LLMModeSelection.UNAVAILABLE_COMMAND_FORMAT.format("new")
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
+        strings.LLMModeSelection.UNAVAILABLE_COMMAND_FORMAT.format(command="new")
     )
 
 
 async def llm_verbosity_selection_start_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    await update.message.reply_text(
-        strings.LLMVerbositySelection.UNAVAILABLE_COMMAND_FORMAT.format("start")
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
+        strings.LLMVerbositySelection.UNAVAILABLE_COMMAND_FORMAT.format(command="start")
     )
 
 
 async def llm_verbosity_selection_new_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    await update.message.reply_text(
-        strings.LLMVerbositySelection.UNAVAILABLE_COMMAND_FORMAT.format("new")
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
+        strings.LLMVerbositySelection.UNAVAILABLE_COMMAND_FORMAT.format(command="new")
     )
 
 
@@ -321,9 +378,16 @@ async def chat_creation_help_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /help is issued while configuring LLM."""
-    await update.message.reply_text(
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
         generate_help(
-            {"help": "Вывести это сообщение", "cancel": "Отменить создание чата"}
+            {
+                "help": strings.ChatCreation.HELP_COMMAND_DESCRIPTION,
+                "cancel": strings.ChatCreation.CANCEL_COMMAND_DESCRIPTION,
+            }
         )
     )
 
@@ -331,9 +395,12 @@ async def chat_creation_help_handler(
 async def llm_chatting_unsupported_command_message(
     command: str, update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    await update.message.reply_text(
-        f"Команда /{command} недоступна во время чата с LLM.\n"
-        "Чтобы завершить чат с LLM используйте команду /stop."
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
+        strings.LLMChatting.UNAVAILABLE_COMMAND_FORMAT.format(command=command)
     )
 
 
@@ -341,9 +408,18 @@ async def llm_chatting_stop_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     """Send a message when the command /stop is issued."""
-    await update.message.reply_text("Чат завершён.")
+    if context.user_data is None:
+        context.user_data = {}
+
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(strings.LLMChatting.CHAT_FINISHED)
+
     context.user_data[LLM_CHAT_USER_DATA_FIELD].settings = None
     context.user_data[LLM_CHAT_USER_DATA_FIELD].data = None
+
     return ConversationHandler.END
 
 
@@ -365,8 +441,17 @@ async def llm_chatting_help_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /help is issued while chatting with LLM."""
-    await update.message.reply_text(
-        generate_help({"help": "Вывести это сообщение", "stop": "Завершить чат с LLM"})
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
+        generate_help(
+            {
+                "help": strings.LLMChatting.HELP_COMMAND_DESCRIPTION,
+                "stop": strings.LLMChatting.STOP_COMMAND_DESCRIPTION,
+            }
+        )
     )
 
 
@@ -374,9 +459,13 @@ async def entry_new_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> ConversationState:
     """Send a message when the command /new is issued."""
+    if context.user_data is None:
+        context.user_data = {}
+
     context.user_data[LLM_CHAT_USER_DATA_FIELD] = llm.LLMChat(
         llm.LLMSettings(None, None), {}
     )
+
     await llm_mode_selection_entry(update, context)
     return ConversationState.LLM_MODE_SELECTION
 
@@ -385,10 +474,15 @@ async def global_start_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when the command /start is issued."""
-    await update.message.reply_text(
-        f"Привет, {update.effective_user.first_name}!\n"
-        "Используйте команду /new чтобы начать новый чат."
-    )
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    user = update.effective_user
+    if user is None:
+        raise TypeError("user is None")
+
+    await message.reply_text(strings.Global.START_FORMAT.format(name=user.first_name))
 
 
 async def global_help_handler(
@@ -396,12 +490,16 @@ async def global_help_handler(
 ) -> None:
     """Send a message when the command /help is issued when not in a
     conversation."""
-    await update.message.reply_text(
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(
         generate_help(
             {
-                "start": "Вывести первоначальное сообщение",
-                "help": "Вывести это сообщение",
-                "new": "Начать новый чат",
+                "start": strings.Global.START_COMMAND_DESCRIPTION,
+                "help": strings.Global.HELP_COMMAND_DESCRIPTION,
+                "new": strings.Global.NEW_COMMAND_DESCRIPTION,
             }
         )
     )
@@ -411,10 +509,11 @@ async def global_unknown_command_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Send a message when an unknown command is issued."""
-    await update.message.reply_text(
-        "Введена неизвестная команда.\n"
-        "Используйте команду /help, чтобы посмотреть список доступных команд."
-    )
+    message = update.message
+    if message is None:
+        raise TypeError("message is None")
+
+    await message.reply_text(strings.Global.UNKNOWN_COMMAND)
 
 
 def main() -> None:
@@ -467,7 +566,11 @@ def main() -> None:
 if __name__ == "__main__":
     check_env_file(ENV_FILE_PATH)
 
-    CONFIG = dotenv_values(ENV_FILE_PATH)
+    CONFIG = {
+        key: value
+        for key, value in dotenv_values(ENV_FILE_PATH).items()
+        if value is not None
+    }
     check_config(CONFIG)
 
     TELEGRAM_BOT_TOKEN = CONFIG["TELEGRAM_BOT_TOKEN"]
