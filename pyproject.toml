@@ -1,10 +1,11 @@
 [project]
 name = "quick-llm-bot"
 version = "0.1.0"
-description = "Simple and easy to deploy telegram bot for interaction with LLM"
+description = "Simple and easy to deploy telegram bot for communication with LLM"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "dotenv>=0.9.9",
+    "httpx>=0.28.1",
     "python-telegram-bot>=22.7",
 ]
