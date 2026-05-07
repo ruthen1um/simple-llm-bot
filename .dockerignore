@@ -5,6 +5,8 @@
 Dockerfile
 compose.yml
 
+.editorconfig
+
 **/__pycache__
 **/*.py[oc]
 build
