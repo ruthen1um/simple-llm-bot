@@ -54,14 +54,12 @@ class Global:
         "Используйте команду /help, чтобы посмотреть список доступных команд."
     )
 
-    START_FORMAT = (
-        "Привет, {name}!\n"
-        "Используйте команду /new чтобы начать новый чат."
-    )
+    START_FORMAT = "Привет, {name}!\nИспользуйте команду /new чтобы начать новый чат."
 
     START_COMMAND_DESCRIPTION = "Вывести первоначальное сообщение"
     HELP_COMMAND_DESCRIPTION = "Вывести это сообщение"
     NEW_COMMAND_DESCRIPTION = "Начать новый чат"
+
 
 @dataclass(frozen=True)
 class ChatCreation:

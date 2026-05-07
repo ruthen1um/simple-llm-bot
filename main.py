@@ -1,30 +1,29 @@
-# pylint: disable=unused-argument
 """
 Simple and easy to deploy telegram bot for communication with LLM.
 """
+
 import logging
 import os
-from typing import Any
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 from warnings import filterwarnings
 
 import httpx
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    MessageHandler,
-    CallbackQueryHandler,
     ConversationHandler,
+    MessageHandler,
     PicklePersistence,
     filters,
 )
 from telegram.warnings import PTBUserWarning
 
-from quickllmbot import llm
-from quickllmbot import strings
+from quickllmbot import llm, strings
 
 
 class ConversationState(Enum):
@@ -64,13 +63,13 @@ logger: logging.Logger
 def check_env() -> None:
     """Checks required variables existence in environment."""
     if "BOT_TOKEN" not in os.environ:
-        raise RuntimeError(f"BOT_TOKEN environment variable is not set")
+        raise RuntimeError("BOT_TOKEN environment variable is not set")
 
     if "BOT_PERSISTENCE_FILE" not in os.environ:
-        raise RuntimeError(f"BOT_PERSISTENCE_FILE environment variable is not set")
+        raise RuntimeError("BOT_PERSISTENCE_FILE environment variable is not set")
 
     if "LLM_API_URL" not in os.environ:
-        raise RuntimeError(f"LLM_API_URL environment variable is not set")
+        raise RuntimeError("LLM_API_URL environment variable is not set")
 
 
 def get_llm_mode(s: str) -> llm.LLMMode:
@@ -294,9 +293,9 @@ async def llm_chatting_handler(
         answer = await get_next_llm_chat_completion(llm_chat.data)
         llm_messages.append({"role": "assistant", "content": answer})
         await bot_message.edit_text(answer)
-    except Exception as ex:
+    except Exception:
         await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
-        raise ex
+        raise
 
 
 async def chat_creation_cancellation_handler(
