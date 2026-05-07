@@ -7,6 +7,7 @@ import os
 from typing import Any
 from enum import Enum
 from dataclasses import dataclass
+from warnings import filterwarnings
 
 import httpx
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -20,7 +21,7 @@ from telegram.ext import (
     PicklePersistence,
     filters,
 )
-from dotenv import dotenv_values
+from telegram.warnings import PTBUserWarning
 
 from quickllmbot import llm
 from quickllmbot import strings
@@ -50,35 +51,26 @@ class CallbackData:
     LLM_VERBOSITY_VERBOSE = "verbose"
 
 
-ENV_FILE_PATH = ".env"
 CONFIG: dict[str, str]
 
-TELEGRAM_BOT_TOKEN: str
-TELEGRAM_BOT_PERSISTENCE_FILE: str
+BOT_TOKEN: str
+BOT_PERSISTENCE_FILE: str
 LLM_API_URL: str
 
 llm_client: httpx.AsyncClient
 logger: logging.Logger
 
 
-def check_env_file(path: str) -> None:
-    """Checks env file existence."""
-    if not os.path.isfile(path):
-        raise RuntimeError(f"{path} does not exist or is not a file")
+def check_env() -> None:
+    """Checks required variables existence in environment."""
+    if "BOT_TOKEN" not in os.environ:
+        raise RuntimeError(f"BOT_TOKEN environment variable is not set")
 
+    if "BOT_PERSISTENCE_FILE" not in os.environ:
+        raise RuntimeError(f"BOT_PERSISTENCE_FILE environment variable is not set")
 
-def check_config(config: dict[str, str]) -> None:
-    """Checks required variables existence in config."""
-    if "TELEGRAM_BOT_TOKEN" not in config:
-        raise RuntimeError(f"TELEGRAM_BOT_TOKEN is not provided in {ENV_FILE_PATH}")
-
-    if "TELEGRAM_BOT_PERSISTENCE_FILE" not in config:
-        raise RuntimeError(
-            f"TELEGRAM_BOT_PERSISTENCE_FILE is not provided in {ENV_FILE_PATH}"
-        )
-
-    if "LLM_API_URL" not in config:
-        raise RuntimeError(f"LLM_API_URL is not provided in {ENV_FILE_PATH}")
+    if "LLM_API_URL" not in os.environ:
+        raise RuntimeError(f"LLM_API_URL environment variable is not set")
 
 
 def get_llm_mode(s: str) -> llm.LLMMode:
@@ -518,9 +510,9 @@ async def global_unknown_command_handler(
 
 def main() -> None:
     """Start the bot."""
-    persistence = PicklePersistence(filepath=TELEGRAM_BOT_PERSISTENCE_FILE)
+    persistence = PicklePersistence(filepath=BOT_PERSISTENCE_FILE)
     application = (
-        Application.builder().token(TELEGRAM_BOT_TOKEN).persistence(persistence).build()
+        Application.builder().token(BOT_TOKEN).persistence(persistence).build()
     )
 
     conv_handler = ConversationHandler(
@@ -564,18 +556,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    check_env_file(ENV_FILE_PATH)
-
-    CONFIG = {
-        key: value
-        for key, value in dotenv_values(ENV_FILE_PATH).items()
-        if value is not None
-    }
-    check_config(CONFIG)
-
-    TELEGRAM_BOT_TOKEN = CONFIG["TELEGRAM_BOT_TOKEN"]
-    TELEGRAM_BOT_PERSISTENCE_FILE = CONFIG["TELEGRAM_BOT_PERSISTENCE_FILE"]
-    LLM_API_URL = CONFIG["LLM_API_URL"]
+    check_env()
+    BOT_TOKEN = os.environ["BOT_TOKEN"]
+    BOT_PERSISTENCE_FILE = os.environ["BOT_PERSISTENCE_FILE"]
+    LLM_API_URL = os.environ["LLM_API_URL"]
 
     llm_client = httpx.AsyncClient(
         base_url=LLM_API_URL,
@@ -589,5 +573,10 @@ if __name__ == "__main__":
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     logger = logging.getLogger(__name__)
+
+    # Disable python-telegram-bot warning
+    filterwarnings(
+        action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning
+    )
 
     main()

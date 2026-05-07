@@ -1,0 +1,10 @@
+services:
+  app:
+    build:
+      context: "."
+    env_file: ".env"
+    volumes:
+      - "app-data:/app/data"
+
+volumes:
+  app-data:

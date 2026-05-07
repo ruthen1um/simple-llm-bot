@@ -5,8 +5,11 @@ build/
 dist/
 wheels/
 *.egg-info
+.mypy_cache
 
-# Virtual environments
+# Environment files
 .venv
-
 .env
+
+# Neovim exrc file
+.nvim.lua
