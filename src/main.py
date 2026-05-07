@@ -1,5 +1,5 @@
 """
-Simple and easy to deploy telegram bot for communication with LLM.
+Simple and easy-to-deploy Telegram bot for LLM inference.
 """
 
 import logging
