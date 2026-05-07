@@ -1,25 +1,4 @@
-.git
-.gitignore
-.gitattributes
-
-Dockerfile
-compose.yml
-
-.editorconfig
-
 **/__pycache__
 **/*.py[oc]
-build
-dist
-wheels
-*.egg-info
-.mypy_cache
 
-.nvim-lua
-
-.venv
 .env
-
-.nvim.lua
-
-README.md
