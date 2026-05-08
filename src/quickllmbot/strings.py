@@ -1,7 +1,3 @@
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
 class LLMModeSelection:
     UNAVAILABLE_COMMAND_FORMAT = (
         "Команда /{command} недоступна во время выбора режима работы.\n"
@@ -16,7 +12,6 @@ class LLMModeSelection:
     IMAGES_MODE_BUTTON = "Работа с изображениями"
 
 
-@dataclass(frozen=True)
 class LLMVerbositySelection:
     UNAVAILABLE_COMMAND_FORMAT = (
         "Команда /{command} недоступна во время выбора уровня подробности вывода.\n"
@@ -31,7 +26,6 @@ class LLMVerbositySelection:
     VERBOSE_VERBOSITY_BUTTON = "Подробный"
 
 
-@dataclass(frozen=True)
 class LLMChatting:
     UNAVAILABLE_COMMAND_FORMAT = (
         "Команда /{command} недоступна во время чата с LLM.\n"
@@ -47,7 +41,6 @@ class LLMChatting:
     STOP_COMMAND_DESCRIPTION = "Завершить чат с LLM"
 
 
-@dataclass(frozen=True)
 class Global:
     UNKNOWN_COMMAND = (
         "Введена неизвестная команда.\n"
@@ -61,7 +54,6 @@ class Global:
     NEW_COMMAND_DESCRIPTION = "Начать новый чат"
 
 
-@dataclass(frozen=True)
 class ChatCreation:
     CANCELLATION = "Создание чата отменено."
     SUCCESS = (
