@@ -1,7 +1,7 @@
 """Telegram bot implementation for LLM inference with conversation state management."""
 
 import logging
-import textwrap
+# import textwrap
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 from telegram.warnings import PTBUserWarning
 from pdf_oxide import PdfDocument
+from telegramify_markdown import convert
 
 from . import llm, strings
 
@@ -164,14 +165,10 @@ def get_system_prompt(settings: llm.LLMSettings) -> str:
         llm.LLMVerbosity.VERBOSE: "Provide detailed, comprehensive explanations with examples.",
     }
 
-    plain_text_message = """You respond ONLY with plain text. You do NOT use markdown, bold text, \
-    italics, headers (###), code blocks (```), lists (1., -, *), or any other formatting. Keep \
-    responses simple and unformatted."""
-
     base_prompt = mode_prompts[mode]
     modifier = verbosity_modifiers[verbosity]
 
-    return base_prompt + plain_text_message + " " + modifier
+    return base_prompt + " " + modifier
 
 
 class QuickLLMBot:
@@ -646,16 +643,18 @@ class QuickLLMBot:
                     answer = await get_next_llm_chat_completion(
                         self.bot._inference_api_client, llm_chat.data
                     )
-                    llm_messages.append({"role": "assistant", "content": answer})
-                    parts = textwrap.wrap(answer, 4096)
-                    for i, part in enumerate(parts):
-                        if i == 0:
-                            await bot_message.edit_text(part)
-                        else:
-                            await context.bot.send_message(
-                                chat_id=chat.id,
-                                text=part,
-                            )
+                    text, entities = convert(answer)
+                    llm_messages.append({"role": "assistant", "content": text})
+                    await bot_message.edit_text(text, entities=[e.to_dict() for e in entities])
+                    # parts = textwrap.wrap(answer, 4096)
+                    # for i, part in enumerate(parts):
+                    #     if i == 0:
+                    #         await bot_message.edit_text(part)
+                    #     else:
+                    #         await context.bot.send_message(
+                    #             chat_id=chat.id,
+                    #             text=part,
+                    #         )
                 except httpx.TimeoutException:
                     self.bot._logger.error("Connection to inference server timed out")
                     del llm_messages[-1]

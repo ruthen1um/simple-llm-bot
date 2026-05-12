@@ -8,6 +8,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pdf-oxide>=0.3.46",
     "python-telegram-bot>=22.7",
+    "telegramify-markdown>=1.1.5",
 ]
 
 [dependency-groups]
