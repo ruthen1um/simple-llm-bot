@@ -1,6 +1,4 @@
-"""
-Simple and easy-to-deploy Telegram bot for LLM inference.
-"""
+"""Entry point for the Telegram LLM bot application."""
 
 import logging
 import os
@@ -10,7 +8,8 @@ from quickllmbot import QuickLLMBot
 
 
 def check_env() -> None:
-    """Checks required variables existence in environment."""
+    """Validates that all required environment variables are set."""
+
     if "BOT_TOKEN" not in os.environ:
         raise RuntimeError("BOT_TOKEN environment variable is not set")
 
@@ -28,7 +27,8 @@ def check_env() -> None:
 
 
 def mask_secret(secret: str, visible: int) -> str:
-    """Shows only last N characters of a secret."""
+    """Returns a masked version of a sensitive string, showing only the last N characters."""
+
     if len(secret) <= visible:
         return "*" * len(secret)
     return "*" * (len(secret) - visible) + secret[-visible:]
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("QuickLLMBot")
 
     logger.info("BOT_TOKEN: %s", mask_secret(BOT_TOKEN, 4))
     logger.info("BOT_DATA_DIR: %s", BOT_DATA_DIR)

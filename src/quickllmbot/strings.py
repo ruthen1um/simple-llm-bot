@@ -1,4 +1,9 @@
+"""User-facing strings organized by conversation state for localization."""
+
+
 class LLMModeSelection:
+    """Strings displayed during LLM mode selection phase."""
+
     UNAVAILABLE_COMMAND_FORMAT = (
         "Команда /{command} недоступна во время выбора режима работы.\n"
         "Чтобы завершить создание чата используйте команду /cancel."
@@ -13,6 +18,8 @@ class LLMModeSelection:
 
 
 class LLMVerbositySelection:
+    """Strings displayed during LLM verbosity selection phase."""
+
     UNAVAILABLE_COMMAND_FORMAT = (
         "Команда /{command} недоступна во время выбора уровня подробности вывода.\n"
         "Чтобы завершить создание чата используйте команду /cancel."
@@ -27,12 +34,17 @@ class LLMVerbositySelection:
 
 
 class LLMChatting:
+    """Strings displayed during active LLM chat."""
+
     UNAVAILABLE_COMMAND_FORMAT = (
         "Команда /{command} недоступна во время чата с LLM.\n"
         "Чтобы завершить чат с LLM используйте команду /stop."
     )
 
     THINKING = "Думаю..."
+    PROCESSING_DOCUMENT = "Обрабатываю документ..."
+    DOCUMENT_READY = "Документ обработан."
+    DOCUMENT_PROCESSING_ERROR = "Не удалось обработать файл."
     COMMUNICATION_ERROR = "Ошибка при взаимодействии с LLM."
 
     CHAT_FINISHED = "Чат завершён."
@@ -40,8 +52,14 @@ class LLMChatting:
     HELP_COMMAND_DESCRIPTION = "Вывести это сообщение"
     STOP_COMMAND_DESCRIPTION = "Завершить чат с LLM"
 
+    TEXT_FILES_NOT_ALLOWED = "Файлы не принимаются в текстовом режиме."
+    DOCUMENT_MIME_TYPE_NOT_ALLOWED = "Принимаются только файлы форматов .txt и .pdf."
+    IMAGE_MIME_TYPE_NOT_ALLOWED = "Принимаются только файлы форматов .jpeg и .png."
+
 
 class Global:
+    """Strings for global commands and messages outside conversation."""
+
     UNKNOWN_COMMAND = (
         "Введена неизвестная команда.\n"
         "Используйте команду /help, чтобы посмотреть список доступных команд."
@@ -55,6 +73,8 @@ class Global:
 
 
 class ChatCreation:
+    """Strings for chat creation confirmation and cancellation."""
+
     CANCELLATION = "Создание чата отменено."
     SUCCESS = (
         "Чат с LLM создан. Далее пишите ваши промпты.\n"

@@ -1,3 +1,5 @@
+"""Telegram bot implementation for LLM inference with conversation state management."""
+
 import logging
 import textwrap
 from enum import Enum
@@ -19,12 +21,13 @@ from telegram.ext import (
     filters,
 )
 from telegram.warnings import PTBUserWarning
+from pdf_oxide import PdfDocument
 
 from . import llm, strings
 
 
 class ConversationState(Enum):
-    """Represents the conversation state."""
+    """Defines the possible states of a user conversation."""
 
     LLM_MODE_SELECTION = 1
     LLM_VERBOSITY_SELECTION = 2
@@ -34,6 +37,16 @@ class ConversationState(Enum):
 CHAT_COMPLETIONS_API_PATH = "/v1/chat/completions"
 
 LLM_CHAT_USER_DATA_FIELD = "llm_chat"
+
+SUPPORTED_DOCUMENT_MIME_TYPES = {
+    "text/plain",
+    "application/pdf",
+}
+
+SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+}
 
 
 class CallbackData:
@@ -47,7 +60,11 @@ class CallbackData:
 
 
 def get_llm_mode(s: str) -> llm.LLMMode:
-    """Returns LLMMode object based on input string"""
+    """Converts a callback string into the corresponding LLMMode enum."""
+
+    if s is None:
+        raise TypeError("s is None")
+
     match s:
         case CallbackData.LLM_MODE_TEXT:
             return llm.LLMMode.TEXT
@@ -60,7 +77,11 @@ def get_llm_mode(s: str) -> llm.LLMMode:
 
 
 def get_llm_verbosity(s: str) -> llm.LLMVerbosity:
-    """Returns LLMVerbosity object based on input string"""
+    """Converts a callback string into the corresponding LLMVerbosity enum."""
+
+    if s is None:
+        raise TypeError("s is None")
+
     match s:
         case CallbackData.LLM_VERBOSITY_SHORT:
             return llm.LLMVerbosity.SHORT
@@ -75,6 +96,8 @@ def get_llm_verbosity(s: str) -> llm.LLMVerbosity:
 async def get_next_llm_chat_completion(
     client: httpx.AsyncClient, data: dict[str, Any]
 ) -> str:
+    """Sends a chat completion request to the inference API and returns the response."""
+
     response = await client.post(
         CHAT_COMPLETIONS_API_PATH,
         json=data,
@@ -97,16 +120,58 @@ async def get_next_llm_chat_completion(
 
 
 def generate_help(data: dict[str, str]) -> str:
+    """Generates a help message from a dictionary of commands and descriptions."""
+
     rows = []
     for command, description in data.items():
         rows.append(f"/{command} - {description}.")
     return "\n".join(rows)
 
 
+def get_initial_chat_data(settings: llm.LLMSettings) -> dict:
+    """Returns initial chat data structure with system prompt."""
+
+    return {
+        "temperature": 0.3,
+        "max_tokens": 4096,
+        "messages": [
+            {
+                "role": "system",
+                "content": get_system_prompt(settings),
+            }
+        ],
+    }
+
+
 def get_system_prompt(settings: llm.LLMSettings) -> str:
-    """Returns system prompt corresponding to provided settings."""
-    # TODO: implement system prompt selection logic
-    return "You are a helpful assistant."
+    """Generates the system instruction prompt based on user-selected settings."""
+
+    mode = settings.mode
+    verbosity = settings.verbosity
+
+    if mode is None or verbosity is None:
+        raise ValueError("Both mode and verbosity must be set")
+
+    mode_prompts = {
+        llm.LLMMode.TEXT: "You are a helpful assistant for text-based tasks.",
+        llm.LLMMode.DOCUMENTS: "You are a helpful assistant for document analysis and processing.",
+        llm.LLMMode.IMAGES: "You are a helpful assistant for image-related tasks.",
+    }
+
+    verbosity_modifiers = {
+        llm.LLMVerbosity.SHORT: "Keep your responses concise and to the point.",
+        llm.LLMVerbosity.DEFAULT: "Provide balanced, informative responses.",
+        llm.LLMVerbosity.VERBOSE: "Provide detailed, comprehensive explanations with examples.",
+    }
+
+    plain_text_message = """You respond ONLY with plain text. You do NOT use markdown, bold text, \
+    italics, headers (###), code blocks (```), lists (1., -, *), or any other formatting. Keep \
+    responses simple and unformatted."""
+
+    base_prompt = mode_prompts[mode]
+    modifier = verbosity_modifiers[verbosity]
+
+    return base_prompt + plain_text_message + " " + modifier
 
 
 class QuickLLMBot:
@@ -119,13 +184,16 @@ class QuickLLMBot:
         inference_api_url: str,
         inference_api_key: str | None,
     ):
-        # TODO: add simple messages handler in all contexts
+        """Initialize the QuickLLMBot with required dependencies and configuration."""
+
         # Disable useless PTB warning
         filterwarnings(
             action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning
         )
 
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("pdf_oxide").setLevel(logging.WARNING)
+
         self._logger = logger
 
         persistence = PicklePersistence(filepath=bot_persistence_file_path)
@@ -146,10 +214,103 @@ class QuickLLMBot:
         )
 
     def run(self):
+        """Starts the bot's polling loop for Telegram updates."""
+
         try:
             self._application.run_polling(allowed_updates=Update.ALL_TYPES)
         except TelegramError as e:
             self._logger.error("Telegram error: %s", e.message)
+
+    def _register_handlers(self) -> None:
+        """Registers all conversation and command handlers with the Telegram application."""
+
+        self._handlers = self._Handlers(self)
+        self._helpers = self._Helpers(self)
+        self._application.add_handler(
+            ConversationHandler(
+                entry_points=[CommandHandler("new", self._handlers.glob.command_new)],
+                states={
+                    ConversationState.LLM_MODE_SELECTION: [
+                        CallbackQueryHandler(
+                            self._handlers.llm_mode_selection.callback_query
+                        ),
+                        CommandHandler(
+                            "cancel", self._handlers.chat_creation.command_cancel
+                        ),
+                        CommandHandler(
+                            "start", self._handlers.llm_mode_selection.command_start
+                        ),
+                        CommandHandler(
+                            "new", self._handlers.llm_mode_selection.command_new
+                        ),
+                        CommandHandler(
+                            "help", self._handlers.chat_creation.command_help
+                        ),
+                        MessageHandler(
+                            filters.TEXT & ~filters.COMMAND,
+                            self._handlers.chat_creation.text,
+                        ),
+                    ],
+                    ConversationState.LLM_VERBOSITY_SELECTION: [
+                        CallbackQueryHandler(
+                            self._handlers.llm_verbosity_selection.callback_query
+                        ),
+                        CommandHandler(
+                            "cancel", self._handlers.chat_creation.command_cancel
+                        ),
+                        CommandHandler(
+                            "start",
+                            self._handlers.llm_verbosity_selection.command_start,
+                        ),
+                        CommandHandler(
+                            "new", self._handlers.llm_verbosity_selection.command_new
+                        ),
+                        CommandHandler(
+                            "help", self._handlers.chat_creation.command_help
+                        ),
+                        MessageHandler(
+                            filters.TEXT & ~filters.COMMAND,
+                            self._handlers.chat_creation.text,
+                        ),
+                    ],
+                    ConversationState.LLM_CHATTING: [
+                        CommandHandler(
+                            "stop", self._handlers.llm_chatting.command_stop
+                        ),
+                        CommandHandler(
+                            "start", self._handlers.llm_chatting.command_start
+                        ),
+                        CommandHandler("new", self._handlers.llm_chatting.command_new),
+                        CommandHandler(
+                            "help", self._handlers.llm_chatting.command_help
+                        ),
+                        MessageHandler(
+                            filters.TEXT & ~filters.COMMAND,
+                            self._handlers.llm_chatting.text,
+                        ),
+                        MessageHandler(
+                            filters.Document.ALL,
+                            self._handlers.llm_chatting.file,
+                        ),
+                    ],
+                },
+                fallbacks=[],
+                name="main_conversation_handler",
+                persistent=True,
+            )
+        )
+        self._application.add_handler(
+            CommandHandler("start", self._handlers.glob.command_start)
+        )
+        self._application.add_handler(
+            CommandHandler("help", self._handlers.glob.command_help)
+        )
+        self._application.add_handler(
+            MessageHandler(filters.COMMAND, self._handlers.glob.unknown_command)
+        )
+        self._application.add_handler(
+            MessageHandler(filters.TEXT, self._handlers.glob.text)
+        )
 
     class _Handlers:
         def __init__(self, bot: QuickLLMBot):
@@ -167,6 +328,8 @@ class QuickLLMBot:
             async def callback_query(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> ConversationState:
+                """Handles inline keyboard button presses for LLM mode selection."""
+
                 user_data = context.user_data
                 if not isinstance(user_data, dict):
                     raise TypeError("user_data is not a dict")
@@ -192,6 +355,8 @@ class QuickLLMBot:
             async def command_start(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Handles /start command during mode selection state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -205,6 +370,8 @@ class QuickLLMBot:
             async def command_new(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Handles /new command during mode selection state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -222,6 +389,8 @@ class QuickLLMBot:
             async def callback_query(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> ConversationState:
+                """Handles inline keyboard button presses for LLM verbosity selection."""
+
                 user_data = context.user_data
                 if not isinstance(user_data, dict):
                     raise TypeError("user_data is not a dict")
@@ -251,6 +420,8 @@ class QuickLLMBot:
             async def command_start(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Handles /start command during verbosity selection state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -264,6 +435,8 @@ class QuickLLMBot:
             async def command_new(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Handles /new command during verbosity selection state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -281,7 +454,8 @@ class QuickLLMBot:
             async def command_stop(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> int:
-                """Send a message when the command /stop is issued."""
+                """Ends the current chat session and clears user session data."""
+
                 user_data = context.user_data
                 if not isinstance(user_data, dict):
                     raise TypeError("user_data is not a dict")
@@ -300,7 +474,8 @@ class QuickLLMBot:
             async def command_start(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when the command /start is issued while chatting with LLM."""
+                """Notifies the user that /start is unavailable while a chat is active."""
+
                 await self.bot._helpers.llm_chatting.unsupported_command_message(
                     "start", update, context
                 )
@@ -308,7 +483,8 @@ class QuickLLMBot:
             async def command_new(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when the command /new is issued while configuring LLM."""
+                """Notifies the user that /new is unavailable while a chat is active."""
+
                 await self.bot._helpers.llm_chatting.unsupported_command_message(
                     "new", update, context
                 )
@@ -316,7 +492,8 @@ class QuickLLMBot:
             async def command_help(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when the command /help is issued while chatting with LLM."""
+                """Displays available commands for the active chat state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -330,9 +507,115 @@ class QuickLLMBot:
                     )
                 )
 
+            async def file(
+                self, update: Update, context: ContextTypes.DEFAULT_TYPE
+            ) -> None:
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
+
+                message = update.message
+                if message is None:
+                    raise TypeError("message is None")
+
+                file = message.document
+                if file is None:
+                    raise TypeError("file is None")
+
+                llm_chat = user_data[LLM_CHAT_USER_DATA_FIELD]
+                match llm_chat.settings.mode:
+                    case llm.LLMMode.TEXT:
+                        await message.reply_text(
+                            strings.LLMChatting.TEXT_FILES_NOT_ALLOWED
+                        )
+                    case llm.LLMMode.DOCUMENTS:
+                        await self.document(update, context)
+                    case llm.LLMMode.IMAGES:
+                        await self.image(update, context)
+
+            async def document(
+                self, update: Update, context: ContextTypes.DEFAULT_TYPE
+            ) -> None:
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
+
+                message = update.message
+                if message is None:
+                    raise TypeError("message is None")
+
+                document = message.document
+                if document is None:
+                    raise TypeError("document is None")
+
+                mime_type = document.mime_type
+                if mime_type is None or mime_type not in SUPPORTED_DOCUMENT_MIME_TYPES:
+                    await message.reply_text(
+                        strings.LLMChatting.DOCUMENT_MIME_TYPE_NOT_ALLOWED
+                    )
+                    return
+
+                processing_msg = await message.reply_text(
+                    strings.LLMChatting.PROCESSING_DOCUMENT
+                )
+
+                file = await document.get_file()
+                data = await file.download_as_bytearray()
+
+                extracted_text: str | None = None
+                if mime_type == "application/pdf":
+                    try:
+                        extracted_text = PdfDocument.from_bytes(
+                            bytes(data)
+                        ).to_markdown_all()
+                    except Exception:
+                        await processing_msg.edit_text(
+                            strings.LLMChatting.DOCUMENT_PROCESSING_ERROR
+                        )
+                        return
+                elif mime_type == "text/plain":
+                    extracted_text = data.decode()
+
+                llm_chat = user_data[LLM_CHAT_USER_DATA_FIELD]
+                if not llm_chat.data:
+                    llm_chat.data = get_initial_chat_data(llm_chat.settings)
+
+                filename = document.file_name or "<UNNAMED DOCUMENT>"
+                context_message = f"DOCUMENT: {filename}\n\n{extracted_text}"
+
+                llm_chat.data["messages"].append(
+                    {"role": "user", "content": context_message}
+                )
+
+                await processing_msg.edit_text(strings.LLMChatting.DOCUMENT_READY)
+
+            async def image(
+                self, update: Update, context: ContextTypes.DEFAULT_TYPE
+            ) -> None:
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
+
+                message = update.message
+                if message is None:
+                    raise TypeError("message is None")
+
+                image = message.document
+                if image is None:
+                    raise TypeError("image is None")
+
+                mime_type = image.mime_type
+                if mime_type is None or mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+                    await message.reply_text(
+                        strings.LLMChatting.IMAGE_MIME_TYPE_NOT_ALLOWED
+                    )
+                    return
+
             async def text(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Handles user text messages during active LLM chat."""
+
                 user_data = context.user_data
                 if not isinstance(user_data, dict):
                     raise TypeError("user_data is not a dict")
@@ -346,23 +629,17 @@ class QuickLLMBot:
                     raise TypeError("chat is None")
 
                 llm_chat = user_data[LLM_CHAT_USER_DATA_FIELD]
-
                 if not llm_chat.data:
-                    llm_chat.data = {
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": get_system_prompt(llm_chat.settings),
-                            }
-                        ]
-                    }
+                    llm_chat.data = get_initial_chat_data(llm_chat.settings)
+
+                llm_messages = llm_chat.data["messages"]
 
                 prompt = message.text
                 if prompt is None:
                     raise TypeError("prompt is None")
 
-                llm_messages = llm_chat.data["messages"]
                 llm_messages.append({"role": "user", "content": prompt})
+                self.bot._logger.info("%s", llm_chat)
 
                 bot_message = await message.reply_text(strings.LLMChatting.THINKING)
                 try:
@@ -381,11 +658,13 @@ class QuickLLMBot:
                             )
                 except httpx.TimeoutException:
                     self.bot._logger.error("Connection to inference server timed out")
+                    del llm_messages[-1]
                     await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
                 except httpx.NetworkError:
                     self.bot._logger.error(
                         "Network error during communication with inference server"
                     )
+                    del llm_messages[-1]
                     await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
                 except httpx.HTTPStatusError as e:
                     self.bot._logger.error(
@@ -393,6 +672,7 @@ class QuickLLMBot:
                         e.response.status_code,
                         e.response.text,
                     )
+                    del llm_messages[-1]
                     await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
 
         class Global:
@@ -402,7 +682,8 @@ class QuickLLMBot:
             async def command_new(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> ConversationState:
-                """Send a message when the command /new is issued."""
+                """Initiates a new chat configuration sequence."""
+
                 user_data = context.user_data
                 if not isinstance(user_data, dict):
                     raise TypeError("user_data is not a dict")
@@ -417,7 +698,8 @@ class QuickLLMBot:
             async def command_start(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when the command /start is issued."""
+                """Sends the initial greeting message to the user."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -433,8 +715,8 @@ class QuickLLMBot:
             async def command_help(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when the command /help is issued when not in a
-                conversation."""
+                """Displays the general help message for the bot."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -452,12 +734,24 @@ class QuickLLMBot:
             async def unknown_command(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when an unknown command is issued."""
+                """Handles unrecognized commands by sending a default error message."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
 
                 await message.reply_text(strings.Global.UNKNOWN_COMMAND)
+
+            async def text(
+                self, update: Update, context: ContextTypes.DEFAULT_TYPE
+            ) -> None:
+                """Handles user text messages when not in a conversation."""
+
+                message = update.message
+                if message is None:
+                    raise TypeError("message is None")
+
+                await self.command_start(update, context)
 
         class ChatCreation:
             def __init__(self, bot: QuickLLMBot):
@@ -466,7 +760,8 @@ class QuickLLMBot:
             async def command_cancel(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> int:
-                """Send a message when the command /cancel is issued."""
+                """Aborts the chat creation process and returns to the idle state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -477,7 +772,8 @@ class QuickLLMBot:
             async def command_help(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Send a message when the command /help is issued while configuring LLM."""
+                """Displays help information specifically for the chat configuration phase."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -490,6 +786,26 @@ class QuickLLMBot:
                         }
                     )
                 )
+
+            async def text(
+                self, update: Update, context: ContextTypes.DEFAULT_TYPE
+            ) -> None:
+                """Resends the inline keyboard based on current conversation state."""
+
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
+
+                llm_chat = user_data[LLM_CHAT_USER_DATA_FIELD]
+
+                if llm_chat.settings.mode is None:
+                    # In LLM_MODE_SELECTION state
+                    await self.bot._helpers.llm_mode_selection.entry(update, context)
+                elif llm_chat.settings.verbosity is None:
+                    # In LLM_VERBOSITY_SELECTION state
+                    await self.bot._helpers.llm_verbosity_selection.entry(
+                        update, context
+                    )
 
     class _Helpers:
         def __init__(self, bot: QuickLLMBot):
@@ -505,10 +821,11 @@ class QuickLLMBot:
             async def entry(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Sends message upon entering LLM_MODE_SELECTION conversation state."""
-                message = update.message
-                if message is None:
-                    raise TypeError("message is None")
+                """Displays the mode selection menu to the user."""
+
+                chat = update.effective_chat
+                if chat is None:
+                    raise TypeError("chat is None")
 
                 keyboard = [
                     [
@@ -531,9 +848,10 @@ class QuickLLMBot:
                     ],
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                # TODO: use send_message rather than reply_text
-                await message.reply_text(
-                    strings.LLMModeSelection.REQUEST, reply_markup=reply_markup
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=strings.LLMModeSelection.REQUEST,
+                    reply_markup=reply_markup,
                 )
 
         class LLMVerbositySelection:
@@ -543,7 +861,8 @@ class QuickLLMBot:
             async def entry(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                """Sends message upon entering LLM_VERBOSITY_SELECTION conversation state."""
+                """Displays the verbosity selection menu to the user."""
+
                 chat = update.effective_chat
                 if chat is None:
                     raise TypeError("chat is None")
@@ -582,6 +901,8 @@ class QuickLLMBot:
             async def entry(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Sends confirmation message upon entering LLM_CHATTING state."""
+
                 chat = update.effective_chat
                 if chat is None:
                     raise TypeError("chat is None")
@@ -594,6 +915,8 @@ class QuickLLMBot:
             async def unsupported_command_message(
                 self, command: str, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
+                """Sends a message indicating a command is not supported in current state."""
+
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
@@ -603,80 +926,3 @@ class QuickLLMBot:
                         command=command
                     )
                 )
-
-    def _register_handlers(self) -> None:
-        self._handlers = self._Handlers(self)
-        self._helpers = self._Helpers(self)
-        self._application.add_handler(
-            ConversationHandler(
-                entry_points=[CommandHandler("new", self._handlers.glob.command_new)],
-                states={
-                    ConversationState.LLM_MODE_SELECTION: [
-                        CallbackQueryHandler(
-                            self._handlers.llm_mode_selection.callback_query
-                        ),
-                        CommandHandler(
-                            "cancel", self._handlers.chat_creation.command_cancel
-                        ),
-                        CommandHandler(
-                            "start", self._handlers.llm_mode_selection.command_start
-                        ),
-                        CommandHandler(
-                            "new", self._handlers.llm_mode_selection.command_new
-                        ),
-                        CommandHandler(
-                            "help", self._handlers.chat_creation.command_help
-                        ),
-                    ],
-                    ConversationState.LLM_VERBOSITY_SELECTION: [
-                        CallbackQueryHandler(
-                            self._handlers.llm_verbosity_selection.callback_query
-                        ),
-                        CommandHandler(
-                            "cancel", self._handlers.chat_creation.command_cancel
-                        ),
-                        CommandHandler(
-                            "start",
-                            self._handlers.llm_verbosity_selection.command_start,
-                        ),
-                        CommandHandler(
-                            "new", self._handlers.llm_verbosity_selection.command_new
-                        ),
-                        CommandHandler(
-                            "help", self._handlers.chat_creation.command_help
-                        ),
-                    ],
-                    ConversationState.LLM_CHATTING: [
-                        CommandHandler(
-                            "stop", self._handlers.llm_chatting.command_stop
-                        ),
-                        CommandHandler(
-                            "start", self._handlers.llm_chatting.command_start
-                        ),
-                        CommandHandler("new", self._handlers.llm_chatting.command_new),
-                        CommandHandler(
-                            "help", self._handlers.llm_chatting.command_help
-                        ),
-                        MessageHandler(
-                            filters.TEXT & ~filters.COMMAND,
-                            self._handlers.llm_chatting.text,
-                        ),
-                    ],
-                },
-                fallbacks=[],
-                name="main_conversation_handler",
-                persistent=True,
-            )
-        )
-        self._application.add_handler(
-            CommandHandler("start", self._handlers.glob.command_start)
-        )
-        self._application.add_handler(
-            CommandHandler("help", self._handlers.glob.command_help)
-        )
-        self._application.add_handler(
-            MessageHandler(filters.COMMAND, self._handlers.glob.unknown_command)
-        )
-        # self._application.add_handler(
-        #     MessageHandler(filters.TEXT, self._handlers.glob.text)
-        # )
