@@ -1,10 +1,13 @@
 import logging
+import textwrap
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from warnings import filterwarnings
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -28,7 +31,7 @@ class ConversationState(Enum):
     LLM_CHATTING = 3
 
 
-CHAT_COMPLETIONS_API_PATH = "/chat/completions"
+CHAT_COMPLETIONS_API_PATH = "/v1/chat/completions"
 
 LLM_CHAT_USER_DATA_FIELD = "llm_chat"
 
@@ -103,43 +106,55 @@ def generate_help(data: dict[str, str]) -> str:
 def get_system_prompt(settings: llm.LLMSettings) -> str:
     """Returns system prompt corresponding to provided settings."""
     # TODO: implement system prompt selection logic
-    # TODO: figure out what to do if LLM output does not fit in 4096 character limit
-
-    # Telegram message can have 4096 characters at max so specify this in system prompt
-    return (
-        "You are a helpful assistant.\n"
-        "Your output must always be less or equal to 4096 characters.\n"
-    )
+    return "You are a helpful assistant."
 
 
 class QuickLLMBot:
     def __init__(
-        self, bot_token: str, bot_persistence_file: str, inference_api_url: str
+        self,
+        logger: logging.Logger,
+        bot_token: str,
+        bot_persistence_file_path: Path,
+        inference_response_timeout: int,
+        inference_api_url: str,
+        inference_api_key: str | None,
     ):
+        # TODO: add simple messages handler in all contexts
         # Disable useless PTB warning
         filterwarnings(
             action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning
         )
 
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        self._logger = logger
 
-        self._handlers = self._Handlers(self)
-        self._helpers = self._Helpers(self)
-        self._application = self._build_application(bot_token, bot_persistence_file)
+        persistence = PicklePersistence(filepath=bot_persistence_file_path)
+        self._application = (
+            Application.builder().token(bot_token).persistence(persistence).build()
+        )
+
         self._register_handlers()
+
+        headers = {}
+        if inference_api_key:
+            headers["Authorization"] = f"Bearer {inference_api_key}"
 
         self._inference_api_client = httpx.AsyncClient(
             base_url=inference_api_url,
-            timeout=httpx.Timeout(60),
+            headers=headers,
+            timeout=httpx.Timeout(inference_response_timeout),
         )
 
     def run(self):
-        self._application.run_polling(allowed_updates=Update.ALL_TYPES)
+        try:
+            self._application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except TelegramError as e:
+            self._logger.error("Telegram error: %s", e.message)
 
     class _Handlers:
         def __init__(self, bot: QuickLLMBot):
             self.bot = bot
-            self.glob = self.Glob(bot)
+            self.glob = self.Global(bot)
             self.chat_creation = self.ChatCreation(bot)
             self.llm_chatting = self.LLMChatting(bot)
             self.llm_mode_selection = self.LLMModeSelection(bot)
@@ -152,8 +167,9 @@ class QuickLLMBot:
             async def callback_query(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> ConversationState:
-                if context.user_data is None:
-                    context.user_data = {}
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
 
                 query = update.callback_query
                 if query is None:
@@ -163,9 +179,7 @@ class QuickLLMBot:
                 if data is None:
                     raise TypeError("data is None")
 
-                context.user_data[
-                    LLM_CHAT_USER_DATA_FIELD
-                ].settings.mode = get_llm_mode(data)
+                user_data[LLM_CHAT_USER_DATA_FIELD].settings.mode = get_llm_mode(data)
 
                 await query.answer()
                 await query.edit_message_text(
@@ -208,8 +222,9 @@ class QuickLLMBot:
             async def callback_query(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> ConversationState:
-                if context.user_data is None:
-                    context.user_data = {}
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
 
                 query = update.callback_query
                 if query is None:
@@ -219,7 +234,7 @@ class QuickLLMBot:
                 if data is None:
                     raise TypeError("data is None")
 
-                context.user_data[
+                user_data[
                     LLM_CHAT_USER_DATA_FIELD
                 ].settings.verbosity = get_llm_verbosity(data)
 
@@ -267,8 +282,9 @@ class QuickLLMBot:
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> int:
                 """Send a message when the command /stop is issued."""
-                if context.user_data is None:
-                    context.user_data = {}
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
 
                 message = update.message
                 if message is None:
@@ -276,8 +292,8 @@ class QuickLLMBot:
 
                 await message.reply_text(strings.LLMChatting.CHAT_FINISHED)
 
-                context.user_data[LLM_CHAT_USER_DATA_FIELD].settings = None
-                context.user_data[LLM_CHAT_USER_DATA_FIELD].data = None
+                user_data[LLM_CHAT_USER_DATA_FIELD].settings = None
+                user_data[LLM_CHAT_USER_DATA_FIELD].data = None
 
                 return ConversationHandler.END
 
@@ -317,14 +333,19 @@ class QuickLLMBot:
             async def text(
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> None:
-                if context.user_data is None:
-                    context.user_data = {}
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
 
                 message = update.message
                 if message is None:
                     raise TypeError("message is None")
 
-                llm_chat = context.user_data[LLM_CHAT_USER_DATA_FIELD]
+                chat = update.effective_chat
+                if chat is None:
+                    raise TypeError("chat is None")
+
+                llm_chat = user_data[LLM_CHAT_USER_DATA_FIELD]
 
                 if not llm_chat.data:
                     llm_chat.data = {
@@ -337,6 +358,9 @@ class QuickLLMBot:
                     }
 
                 prompt = message.text
+                if prompt is None:
+                    raise TypeError("prompt is None")
+
                 llm_messages = llm_chat.data["messages"]
                 llm_messages.append({"role": "user", "content": prompt})
 
@@ -346,12 +370,32 @@ class QuickLLMBot:
                         self.bot._inference_api_client, llm_chat.data
                     )
                     llm_messages.append({"role": "assistant", "content": answer})
-                    await bot_message.edit_text(answer)
-                except Exception:
+                    parts = textwrap.wrap(answer, 4096)
+                    for i, part in enumerate(parts):
+                        if i == 0:
+                            await bot_message.edit_text(part)
+                        else:
+                            await context.bot.send_message(
+                                chat_id=chat.id,
+                                text=part,
+                            )
+                except httpx.TimeoutException:
+                    self.bot._logger.error("Connection to inference server timed out")
                     await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
-                    raise
+                except httpx.NetworkError:
+                    self.bot._logger.error(
+                        "Network error during communication with inference server"
+                    )
+                    await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
+                except httpx.HTTPStatusError as e:
+                    self.bot._logger.error(
+                        "Inference server returned error: %s %s",
+                        e.response.status_code,
+                        e.response.text,
+                    )
+                    await bot_message.edit_text(strings.LLMChatting.COMMUNICATION_ERROR)
 
-        class Glob:
+        class Global:
             def __init__(self, bot: QuickLLMBot):
                 self.bot = bot
 
@@ -359,10 +403,11 @@ class QuickLLMBot:
                 self, update: Update, context: ContextTypes.DEFAULT_TYPE
             ) -> ConversationState:
                 """Send a message when the command /new is issued."""
-                if context.user_data is None:
-                    context.user_data = {}
+                user_data = context.user_data
+                if not isinstance(user_data, dict):
+                    raise TypeError("user_data is not a dict")
 
-                context.user_data[LLM_CHAT_USER_DATA_FIELD] = llm.LLMChat(
+                user_data[LLM_CHAT_USER_DATA_FIELD] = llm.LLMChat(
                     llm.LLMSettings(None, None), {}
                 )
 
@@ -559,14 +604,9 @@ class QuickLLMBot:
                     )
                 )
 
-    def _build_application(
-        self, bot_token: str, bot_persistence_file: str
-    ) -> Application:
-        persistence = PicklePersistence(filepath=bot_persistence_file)
-        app = Application.builder().token(bot_token).persistence(persistence).build()
-        return app
-
     def _register_handlers(self) -> None:
+        self._handlers = self._Handlers(self)
+        self._helpers = self._Helpers(self)
         self._application.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("new", self._handlers.glob.command_new)],

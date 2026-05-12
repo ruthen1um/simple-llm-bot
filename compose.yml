@@ -1,9 +1,0 @@
-services:
-  app:
-    build: "."
-    env_file: ".env"
-    volumes:
-      - "app-data:/app/data"
-
-volumes:
-  app-data:

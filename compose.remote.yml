@@ -1,0 +1,15 @@
+services:
+  app:
+    build: "."
+    environment:
+      - "BOT_TOKEN=${BOT_TOKEN:?BOT_TOKEN env var must be set}"
+      - "INFERENCE_API_URL=${INFERENCE_API_URL:?INFERENCE_API_URL env var must be set}"
+      - "BOT_DATA_DIR=${BOT_DATA_DIR:-/data}"
+      - "BOT_PERSISTENCE_FILE=${BOT_PERSISTENCE_FILE:-quick_llm_bot_data}"
+      - "INFERENCE_RESPONSE_TIMEOUT=${INFERENCE_RESPONSE_TIMEOUT:-60}"
+      - "INFERENCE_API_KEY"
+    volumes:
+      - "app-data:${BOT_DATA_DIR:-/data}"
+
+volumes:
+  app-data:

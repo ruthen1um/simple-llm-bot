@@ -1,9 +1,11 @@
 # Python-generated files
-__pycache__/
+*.__pycache__/
 *.py[oc]
 build/
 dist/
 wheels/
 *.egg-info
 
-.env
+.env*
+!.env.local.example
+!.env.remote.example
